@@ -1,355 +1,175 @@
-# app.py
+"""
+streamlit_re_team_chatbot.py
+
+Single-file Streamlit app: multi-personality real-estate team chatbot using OpenAI.
+Put your OpenAI API key in the sidebar (secure input). Select a persona and chat.
+"""
+
 import streamlit as st
+import openai
+from datetime import datetime
 import pandas as pd
-from datetime import datetime, date, time
 import uuid
+import os
 
-st.set_page_config(page_title="Real Estate Team Task Manager", layout="wide")
+st.set_page_config(page_title="Real Estate Team — Multi-Persona Chatbot", layout="wide")
 
-# ----- Helper functions -----
-def make_task_row(task_id=None, title="", type_="", assignee="", status="Backlog", due=None, notes="", pipeline_stage="Backlog", created=None, extra=None):
-    return {
-        "task_id": task_id or str(uuid.uuid4()),
-        "title": title,
-        "type": type_,
-        "assignee": assignee,
-        "status": status,
-        "due": due,
-        "notes": notes,
-        "pipeline_stage": pipeline_stage,
-        "created": created or datetime.now().isoformat(),
-        "extra": extra or {}
-    }
+# --------------------------
+# Helper: Personas & system prompts
+# --------------------------
+PERSONAS = {
+    "Cold Calling Agent": "You are a friendly, persistent, and concise cold-calling agent. Your goal is to convert a lead or schedule an appointment. Ask qualifying questions, confirm contact details, suggest next steps, and propose an appointment time. Keep messages short and actionable.",
+    "Appointment Booker": "You are an organized appointment booking assistant. Confirm availability, suggest time slots, add calendar notes, and send clear next steps. Manage timezone considerations, reminders, and cancellation/rescheduling flows.",
+    "Marketing Manager": "You are a strategic marketing manager focused on property marketing and lead generation. Provide content ideas (posts, reels, ad copy), campaign suggestions, CTAs, and simple performance KPIs. Keep tone persuasive and brand-smart.",
+    "VOPs Email Tracker": "You are a VOP (verify occupant) email tracker assistant. Help compose verification emails, track delivery states, suggest follow-ups for bounced/unverified addresses, and generate clear tracking records.",
+    "BPO Specialist": "You are a Broker Price Opinion (BPO) specialist. Provide a succinct BPO summary, recommended listing ranges, comps selection tips, and key caveats. Use professional appraisal-adjacent language and list 3 comparable properties if available.",
+    "Transaction Coordinator": "You are a detail-oriented transaction coordinator. Provide checklists, next-step timelines, required documents, and communication templates to keep a deal on track.",
+    "Listing Specialist": "You are a listing specialist focused on crafting compelling listings: headline, bullets, full description, feature highlights, suggested photography shots, and pricing hints.",
+    "Buyer Agent": "You are a buyer agent coach: identify buyer needs, explain buying steps, prioritize properties, and prepare negotiation talking points.",
+    "Seller Agent": "You are a seller agent coach: advise on staging, pricing strategy, expected timelines, and how to present offers to maximize sale price.",
+    "Admin / CRM Manager": "You are a CRM and admin specialist. Keep contact data organized, recommend tags/segments, automation rules, and ensure compliance with data tracking.",
+    "Social Media Manager": "You are a social media manager for real estate: craft daily post ideas, captions, hashtag sets, and a 7-day posting plan tailored to local markets.",
+    "Neighborhood Farmer": "You are a neighborhood farming specialist: create door-knock / mailer scripts, neighborhood statistics to highlight, and a quarterly outreach plan.",
+    "Pipeline Analyst": "You are a pipeline analyst: summarize pipeline health, recommend conversion-focused steps, identify bottlenecks, and create quick KPI dashboards.",
+    "Photo / Video Coordinator": "You are a photo/video coordinator: produce shot lists, recommendations for staging, short video script ideas, and upload/format specs for MLS and social.",
+    "Email Marketer": "You are an email marketer: build follow-up sequences, subject-line options, A/B test ideas, and templates for nurture vs. conversion.",
+    "Open House Coordinator": "You are an open-house coordinator: create checklists, signage copy, registration forms, and follow-up scripts for attendees.",
+    "Document Verifier": "You are a document verification assistant: list required docs, validation steps, red flags to watch for, and short templated requests for missing documents.",
+    "Lead Nurturer": "You are a lead nurturer: craft message sequences for cold, warm, and hot leads; suggest cadence and personalization tokens for better response rates.",
+    "Data Entry Specialist": "You are a precise data entry specialist: provide standardized field mappings, validation rules, and a short SOP for entering leads and transactions into the CRM.",
+    "Google Reviews Manager": "You are a reviews manager: produce review request messages, reply templates to reviews (positive & negative), and a simple follow-up workflow to encourage more reviews.",
+    "Content Writer (Listings & Blogs)": "You are a content writer for listings and local real-estate blogs: produce catchy listing titles, 300–500 word blog posts on local market trends, and meta descriptions.",
+    "Phone Calling Agent (Phone-focused)": "You are a phone-focused calling agent — this persona emphasizes rapport-building, objection handling on calls, voicemail scripts, and clear call-to-action phrasing.",
+    "Leads Agent Autopilot": "You are an automated leads agent: triage incoming leads, tag by priority, suggest immediate responses, and create an outbound plan for high-priority leads.",
+    "Grant Agent": "You are a grant/assistance agent: advise on available local/state housing assistance programs, eligibility proof needed, and templates to apply or refer clients.",
+    "Expired & FSBO Outreach Specialist": "You are an outreach specialist for Expired and FSBO listings: provide concise outreach scripts, value propositions, objection handling, and suggested next steps.",
+    "Weekly Reports & Analytics": "You are a weekly reporting assistant: convert raw data into a short executive summary with 3 key insights and 2 recommended actions."
+}
 
-def load_demo_tasks():
-    tasks = []
-    core_tasks = [
-        "Cold Calling New Leads",
-        "Appointment Booking & Calendar Management",
-        "Marketing Content Creation (Posts, Reels, Ads)",
-        "VOPs Email Tracker Management",
-        "Lead Follow-Up (1–7 Day Sequences)",
-        "Open House Scheduling & Coordination",
-        "Property Showing Coordination",
-        "CRM Data Entry & Updating",
-        "Buyer Intake Screening",
-        "Seller Intake Screening",
-        "Running CMAs (Comparative Market Analysis)",
-        "Creating & Completing BPOs (Broker Price Opinions)",
-        "Weekly Market Update Reports",
-        "Social Media Posting & Engagement (Daily)",
-        "Listing Description Writing & Editing",
-        "Photo / Video Shoot Scheduling for Listings",
-        "Transaction Coordination Support",
-        "Document Collection & Verification",
-        "Pipeline Tracking (Active, Warm, Hot Leads)",
-        "Appointment Reminder Texts & Emails",
-        "Creating Buyer/Seller Guides & Material",
-        "Email Marketing Campaign Setup",
-        "Google Business Profile Updates & Reviews Follow-Up",
-        "Neighborhood Farming & Outreach Tasks",
-        "Weekly Team Reports & Analytics",
-        "Expired & FSBO Outreach"
-    ]
-    for t in core_tasks:
-        tasks.append(make_task_row(title=t, type_="Operational", assignee="", status="Backlog"))
-    return pd.DataFrame(tasks)
+# Ensure persona list is deterministic order for UI
+PERSONA_NAMES = list(PERSONAS.keys())
 
-def df_to_display(df):
-    # Flatten extra for display
-    display = df.copy()
-    display["due"] = display["due"].fillna("")
-    display["created"] = display["created"].apply(lambda x: x.split("T")[0] if pd.notna(x) else "")
-    display["assignee"] = display["assignee"].fillna("")
-    display["notes"] = display["notes"].fillna("")
-    display["type"] = display["type"].fillna("")
-    display["pipeline_stage"] = display["pipeline_stage"].fillna("")
-    return display[["task_id","title","type","assignee","status","pipeline_stage","due","created","notes"]]
+# --------------------------
+# Sidebar: API key, settings
+# --------------------------
+st.sidebar.title("🔐 OpenAI & App Settings")
+api_key = st.sidebar.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key (will not be saved).")
+model = st.sidebar.selectbox("Model", options=["gpt-4", "gpt-4o-mini", "gpt-3.5-turbo"], index=0, help="Choose model (if you have access).")
+max_tokens = st.sidebar.slider("Response max tokens", 150, 2000, 500, step=50)
+temperature = st.sidebar.slider("Temperature", 0.0, 1.2, 0.6, step=0.1)
 
-def save_session_df(df):
-    st.session_state["tasks_df"] = df
+if api_key:
+    openai.api_key = api_key
+else:
+    openai.api_key = os.environ.get("OPENAI_API_KEY", "")
 
-# ----- Initialize session state -----
-if "tasks_df" not in st.session_state:
-    st.session_state["tasks_df"] = load_demo_tasks()
+st.sidebar.markdown("---")
+st.sidebar.markdown("💡 Tip: Enter the API key here (or set OPENAI_API_KEY env var). This app keeps conversation in session only.")
 
-if "call_log" not in st.session_state:
-    st.session_state["call_log"] = pd.DataFrame(columns=["call_id","lead_name","phone","agent","datetime","outcome","notes"])
 
-if "bpo_df" not in st.session_state:
-    st.session_state["bpo_df"] = pd.DataFrame(columns=["bpo_id","property_address","estimated_value","comps_summary","agent","date","notes"])
+# --------------------------
+# Session state initialization
+# --------------------------
+if "history" not in st.session_state:
+    # history holds dict keyed by persona name, value is list of messages in chat format
+    st.session_state["history"] = {name: [{"role":"system","content":PERSONAS[name]}] for name in PERSONA_NAMES}
+if "active_persona" not in st.session_state:
+    st.session_state["active_persona"] = PERSONA_NAMES[0]
+if "convos_meta" not in st.session_state:
+    st.session_state["convos_meta"] = {}  # store metadata like created_at, convo_id
 
-if "vop_df" not in st.session_state:
-    st.session_state["vop_df"] = pd.DataFrame(columns=["vop_id","email_subject","recipient","sent_date","status","notes"])
+# --------------------------
+# UI: Top controls
+# --------------------------
+st.title("🏘️ Real Estate Team — Multi-Persona Chatbot")
+st.markdown("Choose a team member persona on the left, type a prompt, and the assistant will reply using that role's tone and priorities.")
 
-# ----- Layout -----
-st.title("🧭 Real Estate Team — Task Manager & Operations")
 col1, col2 = st.columns([3,1])
 
-with col2:
-    st.markdown("### Quick Controls")
-    if st.button("Reset to Demo Tasks"):
-        st.session_state["tasks_df"] = load_demo_tasks()
-        st.success("Demo tasks reloaded.")
-    uploaded = st.file_uploader("Import tasks CSV", type=["csv","xlsx"])
-    if uploaded:
-        try:
-            if uploaded.name.endswith(".csv"):
-                df_in = pd.read_csv(uploaded)
-            else:
-                df_in = pd.read_excel(uploaded)
-            # Expect columns similar to display; convert to app format
-            loaded = []
-            for _, r in df_in.iterrows():
-                loaded.append(make_task_row(task_id=r.get("task_id", None),
-                                            title=r.get("title",""),
-                                            type_=r.get("type",""),
-                                            assignee=r.get("assignee",""),
-                                            status=r.get("status","Backlog"),
-                                            due=r.get("due", None),
-                                            notes=r.get("notes",""),
-                                            pipeline_stage=r.get("pipeline_stage","")))
-            st.session_state["tasks_df"] = pd.DataFrame(loaded)
-            st.success("Imported tasks.")
-        except Exception as e:
-            st.error(f"Import failed: {e}")
+with col1:
+    persona = st.selectbox("Choose persona", options=PERSONA_NAMES, index=PERSONA_NAMES.index(st.session_state["active_persona"]))
+    st.session_state["active_persona"] = persona
 
-    st.download_button("Export tasks CSV", df_to_display(st.session_state["tasks_df"]).to_csv(index=False), file_name="tasks_export.csv")
+    # Conversation display
+    st.markdown(f"### Chat — **{persona}**")
+    chat_container = st.container()
+    with chat_container:
+        messages = st.session_state["history"][persona]
+        # show all except system
+        for i, m in enumerate(messages):
+            if m["role"] == "system":
+                continue
+            speaker = "You" if m["role"] == "user" else persona
+            time_str = ""
+            # optionally show timestamps (if stored)
+            ts = m.get("ts", None)
+            if ts:
+                time_str = f" — {ts}"
+            if m["role"] == "user":
+                st.markdown(f"**You**{time_str}: {m['content']}")
+            else:
+                st.markdown(f"**{persona}**{time_str}: {m['content']}")
+
+    # Input box
+    with st.form(key="prompt_form", clear_on_submit=True):
+        user_input = st.text_area("Your message", height=120, placeholder="Ask this persona for help (e.g., 'Create a 3-email follow-up for a cold lead')...")
+        submit = st.form_submit_button("Send")
+
+    if submit:
+        if not api_key and not openai.api_key:
+            st.error("Please provide an OpenAI API key in the sidebar.")
+        elif not user_input.strip():
+            st.warning("Type a message before sending.")
+        else:
+            # Append user message to history
+            user_msg = {"role":"user", "content": user_input.strip(), "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            st.session_state["history"][persona].append(user_msg)
+
+            # Build messages to send (include system prompt then conversation)
+            messages_to_send = st.session_state["history"][persona].copy()
+
+            # Call OpenAI Chat API
+            try:
+                with st.spinner("Waiting for assistant..."):
+                    resp = openai.ChatCompletion.create(
+                        model=model,
+                        messages=messages_to_send,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
+                assistant_text = resp["choices"][0]["message"]["content"].strip()
+                assistant_msg = {"role":"assistant", "content": assistant_text, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                st.session_state["history"][persona].append(assistant_msg)
+                # show assistant reply immediately
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"OpenAI request failed: {e}")
+
+with col2:
+    st.markdown("### Quick Actions")
+    if st.button("Reset conversation"):
+        st.session_state["history"][persona] = [{"role":"system","content":PERSONAS[persona]}]
+        st.success("Conversation reset.")
+        st.experimental_rerun()
+
+    if st.button("Export conversation (CSV)"):
+        # Export visible conversation entries (user + assistant)
+        conv = [m for m in st.session_state["history"][persona] if m["role"] != "system"]
+        df = pd.DataFrame([{"role": m["role"], "content": m["content"], "ts": m.get("ts","")} for m in conv])
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download CSV", csv, file_name=f"chat_{persona.replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+
+    if st.button("Copy persona prompt to clipboard"):
+        st.write(PERSONAS[persona])
+        st.success("Persona prompt shown above — copy it manually (browser clipboard access may be restricted).")
 
     st.markdown("---")
-    st.markdown("### Create Quick Task")
-    with st.form("quick_task"):
-        q_title = st.text_input("Task title")
-        q_assignee = st.text_input("Assignee")
-        q_type = st.selectbox("Type", ["Operational","Marketing","Sales","Admin","Other"])
-        q_due = st.date_input("Due date", value=None)
-        q_notes = st.text_area("Notes", max_chars=400)
-        submitted = st.form_submit_button("Create Task")
-        if submitted:
-            df = st.session_state["tasks_df"]
-            new = make_task_row(title=q_title, assignee=q_assignee, type_=q_type, due=q_due.isoformat() if q_due else None)
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            save_session_df(df)
-            st.success("Task created.")
+    st.markdown("### Active persona system prompt")
+    st.info(PERSONAS[persona])
 
-# ----- Main area: Tabs -----
-tabs = st.tabs(["Dashboard","Tasks Board","Cold Calls","BPOs","VOPs Email Tracker","Reports & Exports","Settings"])
-
-# ----- Dashboard Tab -----
-with tabs[0]:
-    st.header("Team Dashboard")
-    df = st.session_state["tasks_df"]
-    st.metric("Total Tasks", len(df))
-    st.metric("Backlog", len(df[df["status"]=="Backlog"]))
-    st.metric("In Progress", len(df[df["status"]=="In Progress"]))
-    st.metric("Completed", len(df[df["status"]=="Completed"]))
-
-    st.subheader("Pipeline Snapshot")
-    pipeline_counts = df["pipeline_stage"].value_counts().to_dict()
-    st.write(pipeline_counts)
-
-    st.subheader("Quick Filters")
-    f_assignee = st.selectbox("Filter by assignee", options=["All"] + sorted(df["assignee"].dropna().unique().tolist()))
-    f_status = st.selectbox("Filter by status", options=["All","Backlog","In Progress","Completed","On Hold","Cancelled"])
-    tmp = df.copy()
-    if f_assignee != "All":
-        tmp = tmp[tmp["assignee"]==f_assignee]
-    if f_status != "All":
-        tmp = tmp[tmp["status"]==f_status]
-    st.dataframe(df_to_display(tmp), height=320)
-
-# ----- Tasks Board Tab -----
-with tabs[1]:
-    st.header("Tasks Board")
-    df = st.session_state["tasks_df"]
-
-    st.markdown("**Search / Filter**")
-    query = st.text_input("Search titles or notes")
-    type_filter = st.selectbox("Type", options=["All"] + sorted(df["type"].dropna().unique().tolist()))
-    assignee_filter = st.selectbox("Assignee", options=["All"] + sorted(df["assignee"].fillna("").unique().tolist()))
-    if query:
-        df = df[df["title"].str.contains(query, case=False, na=False) | df["notes"].str.contains(query, case=False, na=False)]
-    if type_filter != "All":
-        df = df[df["type"]==type_filter]
-    if assignee_filter != "All":
-        df = df[df["assignee"]==assignee_filter]
-
-    st.dataframe(df_to_display(df), height=400)
-
-    st.markdown("**Edit / Update Task**")
-    with st.form("edit_task_form"):
-        edit_id = st.selectbox("Select task to edit", options=[""] + df["task_id"].tolist())
-        if edit_id:
-            row = df[df["task_id"]==edit_id].iloc[0]
-            e_title = st.text_input("Title", value=row["title"])
-            e_type = st.selectbox("Type", ["Operational","Marketing","Sales","Admin","Other"], index=0)
-            e_assignee = st.text_input("Assignee", value=row["assignee"])
-            e_status = st.selectbox("Status", ["Backlog","In Progress","Completed","On Hold","Cancelled"], index=["Backlog","In Progress","Completed","On Hold","Cancelled"].index(row.get("status","Backlog")))
-            e_pipeline = st.selectbox("Pipeline Stage", ["Backlog","Lead","Contacted","Appointment","Offer","Under Contract","Closed"], index=["Backlog","Lead","Contacted","Appointment","Offer","Under Contract","Closed"].index(row.get("pipeline_stage","Backlog")))
-            e_due = st.date_input("Due date", value=(pd.to_datetime(row["due"]).date() if pd.notna(row["due"]) and row["due"]!="" else date.today()))
-            e_notes = st.text_area("Notes", value=row["notes"])
-            updated = st.form_submit_button("Update Task")
-            if updated:
-                df_idx = st.session_state["tasks_df"].index[st.session_state["tasks_df"]["task_id"]==edit_id].tolist()[0]
-                st.session_state["tasks_df"].at[df_idx,"title"] = e_title
-                st.session_state["tasks_df"].at[df_idx,"type"] = e_type
-                st.session_state["tasks_df"].at[df_idx,"assignee"] = e_assignee
-                st.session_state["tasks_df"].at[df_idx,"status"] = e_status
-                st.session_state["tasks_df"].at[df_idx,"pipeline_stage"] = e_pipeline
-                st.session_state["tasks_df"].at[df_idx,"due"] = e_due.isoformat()
-                st.session_state["tasks_df"].at[df_idx,"notes"] = e_notes
-                st.success("Task updated.")
-
-    st.markdown("**Bulk actions**")
-    with st.form("bulk_actions"):
-        selected_ids = st.multiselect("Select tasks (by ID)", options=df["task_id"].tolist())
-        bulk_action = st.selectbox("Action", ["Set status to In Progress","Set status to Completed","Assign to...","Delete selected"])
-        assign_to = st.text_input("Assign to (if applicable)")
-        do_bulk = st.form_submit_button("Apply")
-        if do_bulk:
-            if not selected_ids:
-                st.warning("No tasks selected.")
-            else:
-                for tid in selected_ids:
-                    idx_list = st.session_state["tasks_df"].index[st.session_state["tasks_df"]["task_id"]==tid].tolist()
-                    if not idx_list:
-                        continue
-                    idx = idx_list[0]
-                    if bulk_action=="Set status to In Progress":
-                        st.session_state["tasks_df"].at[idx,"status"] = "In Progress"
-                    elif bulk_action=="Set status to Completed":
-                        st.session_state["tasks_df"].at[idx,"status"] = "Completed"
-                    elif bulk_action=="Assign to...":
-                        st.session_state["tasks_df"].at[idx,"assignee"] = assign_to
-                    elif bulk_action=="Delete selected":
-                        st.session_state["tasks_df"].drop(index=idx, inplace=True)
-                st.session_state["tasks_df"].reset_index(drop=True, inplace=True)
-                st.success("Bulk action applied.")
-
-# ----- Cold Calls Tab -----
-with tabs[2]:
-    st.header("Cold Call Log")
-    with st.expander("Log a new cold call"):
-        with st.form("call_form"):
-            lead_name = st.text_input("Lead name")
-            phone = st.text_input("Phone")
-            agent = st.text_input("Agent")
-            call_dt = st.datetime_input("Call date & time", value=datetime.now())
-            outcome = st.selectbox("Outcome", ["No answer","Left voicemail","Spoke - interested","Spoke - not interested","Callback later"])
-            call_notes = st.text_area("Notes")
-            call_submit = st.form_submit_button("Save call")
-            if call_submit:
-                row = {
-                    "call_id": str(uuid.uuid4()),
-                    "lead_name": lead_name,
-                    "phone": phone,
-                    "agent": agent,
-                    "datetime": call_dt.isoformat(),
-                    "outcome": outcome,
-                    "notes": call_notes
-                }
-                st.session_state["call_log"] = pd.concat([st.session_state["call_log"], pd.DataFrame([row])], ignore_index=True)
-                st.success("Call logged.")
-
-    st.subheader("Call History")
-    st.dataframe(st.session_state["call_log"].sort_values("datetime", ascending=False), height=300)
-    st.download_button("Export call log CSV", st.session_state["call_log"].to_csv(index=False), file_name="call_log.csv")
-
-# ----- BPOs Tab -----
-with tabs[3]:
-    st.header("Broker Price Opinions (BPOs)")
-    st.markdown("Create and track BPOs for properties.")
-    with st.form("bpo_form"):
-        prop_addr = st.text_input("Property address")
-        est_value = st.number_input("Estimated value ($)", min_value=0, step=1000.0, format="%.2f")
-        comps = st.text_area("Comps summary (short)")
-        bpo_agent = st.text_input("Agent completing BPO")
-        bpo_date = st.date_input("Date", value=date.today())
-        bpo_notes = st.text_area("Notes")
-        bpo_save = st.form_submit_button("Save BPO")
-        if bpo_save:
-            bpo_row = {
-                "bpo_id": str(uuid.uuid4()),
-                "property_address": prop_addr,
-                "estimated_value": est_value,
-                "comps_summary": comps,
-                "agent": bpo_agent,
-                "date": bpo_date.isoformat(),
-                "notes": bpo_notes
-            }
-            st.session_state["bpo_df"] = pd.concat([st.session_state["bpo_df"], pd.DataFrame([bpo_row])], ignore_index=True)
-            st.success("BPO saved.")
-
-    st.subheader("BPO Records")
-    st.dataframe(st.session_state["bpo_df"].sort_values("date", ascending=False), height=300)
-    st.download_button("Export BPOs CSV", st.session_state["bpo_df"].to_csv(index=False), file_name="bpos.csv")
-
-# ----- VOPs Email Tracker Tab -----
-with tabs[4]:
-    st.header("VOPs Email Tracker")
-    st.markdown("Track emails sent to verify owner/occupants (VOPs) or other verification emails.")
-    with st.form("vop_form"):
-        subj = st.text_input("Email subject")
-        recipient = st.text_input("Recipient")
-        sent_date = st.date_input("Sent date", value=date.today())
-        vop_status = st.selectbox("Status", ["Sent","Delivered","Opened","Click","Bounced","Unverified"])
-        vop_notes = st.text_area("Notes")
-        vop_save = st.form_submit_button("Save Email Record")
-        if vop_save:
-            vop_row = {
-                "vop_id": str(uuid.uuid4()),
-                "email_subject": subj,
-                "recipient": recipient,
-                "sent_date": sent_date.isoformat(),
-                "status": vop_status,
-                "notes": vop_notes
-            }
-            st.session_state["vop_df"] = pd.concat([st.session_state["vop_df"], pd.DataFrame([vop_row])], ignore_index=True)
-            st.success("VOP record saved.")
-
-    st.subheader("Email Records")
-    st.dataframe(st.session_state["vop_df"].sort_values("sent_date", ascending=False), height=300)
-    st.download_button("Export VOPs CSV", st.session_state["vop_df"].to_csv(index=False), file_name="vops_emails.csv")
-
-# ----- Reports & Exports -----
-with tabs[5]:
-    st.header("Reports & Exports")
-    df = st.session_state["tasks_df"]
-    st.subheader("Tasks by Assignee")
-    try:
-        tb = df.groupby("assignee").size().reset_index(name="count").sort_values("count", ascending=False)
-        st.table(tb)
-    except Exception:
-        st.write("No assignees yet.")
-
-    st.subheader("Pipeline stages")
-    pipeline = df["pipeline_stage"].value_counts().reset_index()
-    pipeline.columns = ["stage","count"]
-    st.table(pipeline)
-
-    st.markdown("### Export everything")
-    st.download_button("Export tasks CSV", df_to_display(df).to_csv(index=False), file_name="all_tasks.csv")
-    st.download_button("Export all data (ZIP-style CSVs)", 
-                       data=(df_to_display(df).to_csv(index=False) + "\n\n\n" + st.session_state["call_log"].to_csv(index=False) + "\n\n\n" + st.session_state["bpo_df"].to_csv(index=False) + "\n\n\n" + st.session_state["vop_df"].to_csv(index=False)),
-                       file_name="all_data_bundle.csv")
-
-# ----- Settings Tab -----
-with tabs[6]:
-    st.header("Settings & Roles")
-    st.markdown("Define team roles and quick SOP links.")
-    if "roles" not in st.session_state:
-        st.session_state["roles"] = {"Admin": ["manage_tasks","export"], "Agent": ["manage_own_tasks"], "VA": ["create_tasks"]}
-
-    st.json(st.session_state["roles"])
-    with st.form("roles_form"):
-        new_role = st.text_input("New role name")
-        perms = st.text_area("Permissions (comma separated)")
-        add_role = st.form_submit_button("Add role")
-        if add_role and new_role:
-            st.session_state["roles"][new_role] = [p.strip() for p in perms.split(",") if p.strip()]
-            st.success("Role added.")
-
-# ----- Footer -----
+# --------------------------
+# Footer: small role legend
+# --------------------------
 st.markdown("---")
-st.markdown("Built for real estate operations — features: Cold calls, Appointment booking, Marketing tasks, VOPs email tracking, BPOs, pipeline stages, import/export, and quick reporting.")
+st.caption("Personas are tuned to typical real-estate team roles. Use them as starting points — you can customize messages and refine prompts for stronger brand voice or compliance.")
 
