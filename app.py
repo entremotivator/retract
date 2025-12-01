@@ -7,6 +7,7 @@ Put your OpenAI API key in the sidebar (secure input). Select a persona and chat
 
 import streamlit as st
 import openai
+from openai import OpenAI
 from datetime import datetime
 import pandas as pd
 import uuid
