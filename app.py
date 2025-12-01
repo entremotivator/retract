@@ -6,11 +6,9 @@ Put your OpenAI API key in the sidebar (secure input). Select a persona and chat
 """
 
 import streamlit as st
-import openai
 from openai import OpenAI
 from datetime import datetime
 import pandas as pd
-import uuid
 import os
 
 st.set_page_config(page_title="Real Estate Team — Multi-Persona Chatbot", layout="wide")
@@ -55,14 +53,17 @@ PERSONA_NAMES = list(PERSONAS.keys())
 # --------------------------
 st.sidebar.title("🔐 OpenAI & App Settings")
 api_key = st.sidebar.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key (will not be saved).")
-model = st.sidebar.selectbox("Model", options=["gpt-4", "gpt-4o-mini", "gpt-3.5-turbo"], index=0, help="Choose model (if you have access).")
+model = st.sidebar.selectbox("Model", options=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"], index=0, help="Choose model (if you have access).")
 max_tokens = st.sidebar.slider("Response max tokens", 150, 2000, 500, step=50)
 temperature = st.sidebar.slider("Temperature", 0.0, 1.2, 0.6, step=0.1)
 
+# Initialize OpenAI client
 if api_key:
-    openai.api_key = api_key
+    client = OpenAI(api_key=api_key)
+elif os.environ.get("OPENAI_API_KEY"):
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 else:
-    openai.api_key = os.environ.get("OPENAI_API_KEY", "")
+    client = None
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("💡 Tip: Enter the API key here (or set OPENAI_API_KEY env var). This app keeps conversation in session only.")
@@ -117,7 +118,7 @@ with col1:
         submit = st.form_submit_button("Send")
 
     if submit:
-        if not api_key and not openai.api_key:
+        if client is None:
             st.error("Please provide an OpenAI API key in the sidebar.")
         elif not user_input.strip():
             st.warning("Type a message before sending.")
@@ -132,17 +133,17 @@ with col1:
             # Call OpenAI Chat API
             try:
                 with st.spinner("Waiting for assistant..."):
-                    resp = openai.ChatCompletion.create(
+                    response = client.chat.completions.create(
                         model=model,
                         messages=messages_to_send,
                         max_tokens=max_tokens,
                         temperature=temperature,
                     )
-                assistant_text = resp["choices"][0]["message"]["content"].strip()
+                assistant_text = response.choices[0].message.content.strip()
                 assistant_msg = {"role":"assistant", "content": assistant_text, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 st.session_state["history"][persona].append(assistant_msg)
                 # show assistant reply immediately
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"OpenAI request failed: {e}")
 
@@ -151,7 +152,7 @@ with col2:
     if st.button("Reset conversation"):
         st.session_state["history"][persona] = [{"role":"system","content":PERSONAS[persona]}]
         st.success("Conversation reset.")
-        st.experimental_rerun()
+        st.rerun()
 
     if st.button("Export conversation (CSV)"):
         # Export visible conversation entries (user + assistant)
