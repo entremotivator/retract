@@ -173,4 +173,3 @@ with col2:
 # --------------------------
 st.markdown("---")
 st.caption("Personas are tuned to typical real-estate team roles. Use them as starting points — you can customize messages and refine prompts for stronger brand voice or compliance.")
-
